@@ -11,11 +11,21 @@ Use `so` (short for show_options) at each step in the proof to see what the poss
 /-
 Could check types before trying intro or apply; is that faster than just applying it?
 -/
+
+/-
+Next:
+If goal is of type Iff, apply Iff.intro
+If term is of type Iff, let h_1 := h.mp, mpr
+
+For Or:
+Use Or.elim to prove goals of type or ()
+
+-/
 elab "so" : tactic =>
   Lean.Elab.Tactic.withMainContext do
     let goal ← getMainGoal
     let ctx ← getLCtx
-    withoutModifyingState do
+    withoutModifyingState do -- intro
       try
         let fresh := ctx.getUnusedName `h
         let (fvarId, newGoal) ← goal.intro1
@@ -26,16 +36,38 @@ elab "so" : tactic =>
           let newFVar := mkFVar fvarId
           let fVarType ← inferType newFVar
           dbg_trace f!"{← ppGoal renamedGoal}\n"
-      catch e =>
+      catch e => pure ()
         --dbg_trace f!"error: {← e.toMessageData.toString}\n"
+
+    withoutModifyingState do -- apply And.intro
+      let goalType ← Lean.Elab.Tactic.getMainTarget
+      match ← whnf goalType with
+          | (.app (.app (.const ``And _) P) Q) =>
+            let newGoals ← goal.apply (mkConst ``And.intro)
+            dbg_trace f!"apply And.intro"
+            dbg_trace f!"------------"
+            for goal in newGoals do
+              dbg_trace f!"{ ← ppGoal goal}\n"
+          | _ => pure ()
+
+    withoutModifyingState do -- apply False.elim
+      try
+        let goalType ← goal.getType
+        let u ← getLevel goalType
+        let elim := mkApp (mkConst ``False.elim [u]) goalType
+        let newGoals ← goal.apply elim
+        dbg_trace f!"apply False.elim"
+        dbg_trace f!"------------"
+        for goal in newGoals do
+          dbg_trace f!"{← ppGoal goal}\n"
+      catch e => dbg_trace f!"{← e.toMessageData.toString}\n"
 
     for ldecl in ctx do
       if ldecl.isImplementationDetail then
         continue
       let expr := mkFVar ldecl.fvarId
-      withoutModifyingState do
+      withoutModifyingState do -- apply <eachTerm>
         try
-
           let newGoals ← goal.apply expr
           dbg_trace f!"apply {← ppExpr expr}"
           dbg_trace f!"------------"
@@ -44,99 +76,78 @@ elab "so" : tactic =>
           else
             for goal in newGoals do
             dbg_trace f!"{ ← ppGoal goal}\n"
-        catch e =>
-          dbg_trace f!""
-        -- withoutModifyingState do
-        --   match ← whnf epxr with
-        --   | (.app (.app (.const ``And _) P) Q) =>
-        --     dbg_trace f!"Expression {expr} is an And."
-        --   | _ =>
+        catch e => pure ()
+
+        withoutModifyingState do -- And.left and and.right
+        let declType ← inferType expr
+          match ← whnf declType with
+          | (.app (.app (.const ``And _) P) Q) =>
+            let fresh := ctx.getUnusedName `h
+            let leftProof ← mkAppM ``And.left #[expr]
+            let rightProof ← mkAppM ``And.right #[expr]
+            withoutModifyingState do
+              liftMetaTactic fun mvarId => do
+                let mvarIdNew ← mvarId.define fresh (← inferType leftProof) leftProof
+                let (_, mvarIdNew) ← mvarIdNew.intro1P
+                return [mvarIdNew]
+              let goal ← getMainGoal
+              dbg_trace f!"let {fresh} := {← ppExpr leftProof}"
+              dbg_trace f!"-----------------"
+              dbg_trace f!"{← ppGoal goal}\n"
+            withoutModifyingState do
+              liftMetaTactic fun mvarId => do
+                let mvarIdNew ← mvarId.define fresh (← inferType rightProof) rightProof
+                let (_, mvarIdNew) ← mvarIdNew.intro1P
+                return [mvarIdNew]
+              let goal ← getMainGoal
+              dbg_trace f!"let {fresh} := {← ppExpr rightProof}"
+              dbg_trace f!"------------------"
+              dbg_trace f!"{← ppGoal goal}\n"
+          | _ =>
+            pure ()
 
 
 
-
-
-
-
-            --dbg_trace f!"error: {← e.toMessageData.toString}\n"
 
 
 /-
 Please try it out! Bonus points if you can break the tactic.
 -/
 
-variable (p q : Prop)
+variable (p q r s : Prop)
 
-
--- 1. Identity
-theorem imp_self' : p → p := by
-  sorry
-
--- 2. Implication introduction / transitivity
-theorem imp_trans : (p → q) → p → q := by
-  sorry
-
--- 3. Currying
-theorem curry : (p → q) → (p → p → q) := by
-  sorry
--- 4. Uncurrying
-theorem uncurry : (p → p → q) → (p → q) := by
+example : (p ↔ q) → p → q := by
   intro h
-  intro h_1
+  let hx := h.mp
+  exact hx
+
+
+theorem complex_and_false
+  (h₁ : p ∧ q)       -- evidence of an And
+  (h₂ : q → r)
+  (h₃ : r → s)
+  (h₄ : False → p) :
+  (p ∧ r) ∧ (q ∧ s) := by
+  apply And.intro
+  apply And.intro
+  let h := h₁.left
   apply h
-  apply h_1
-  apply h_1
+  apply h₂
+  let h := h₁.right
+  apply h
+  apply And.intro
+  let h := h₁.right
+  apply h
+  apply h₃
+  apply h₂
+  let h := h₁.right
+  apply h
 
-
-
--- 5. Double implication
-theorem imp_chain : (p → q) → (q → p) → p → p := by
-  sorry
--- 6. Weakening on the right
-theorem weaken_right : p → (q → p) := by
-  sorry
-
--- 7. Weakening on the left
-theorem weaken_left : (p → q) → (p → (q → q)) := by
-  sorry
-
--- 8. Implication duplication
-theorem imp_dup' : (p → q) → (p → p → q) := by
-  sorry
-
--- 9. Composition
-theorem comp : (q → p) → (p → q) → p → p := by
-  sorry
-
--- 10. Tautology with implication nesting
-theorem nested : p → (q → p) := by
-  sorry
-
-variable (p q r s t u v : Prop)
-
-theorem complex_imp :
-  (p → q → r) →
-  (r → s → t) →
-  (t → u) →
-  (u → v) →
-  (p → q) →
-  (p → s) →
-  p →
-  v :=
-by
+example : p ∧ ¬q → ¬(p → q) := by
   intro h
   intro h_1
-  intro h_2
-  intro h_3
-  intro h_4
-  intro h_5
-  intro h_6
-  apply h_3
+  let h_2 := h.right
   apply h_2
   apply h_1
-  apply h
-  apply h_6
-  apply h_4
-  apply h_6
-  apply h_5
-  apply h_6
+  let h_3 := h.left
+  apply h_3
