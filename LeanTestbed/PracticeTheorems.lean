@@ -29,3 +29,14 @@ example : (¬p ∨ q) → (p → q) := sorry
 example : p ∨ False ↔ p := sorry
 example : p ∧ False ↔ False := sorry
 example : (p → q) → (¬q → ¬p) := sorry
+
+
+/-
+Note:
+
+example : ((p ∧ q) → r) → (p → r) ∧ (q → r) := by
+  apply Iff.intro
+  apply False.elim
+This fails but
+
+-/
