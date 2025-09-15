@@ -40,3 +40,25 @@ example : ((p ∧ q) → r) → (p → r) ∧ (q → r) := by
 This fails but
 
 -/
+
+example : (¬p ∨ q) → (p → q) := by
+intro h
+intro h_1
+cases h with | inl hnp | inr hq
+apply False.elim
+apply hnp
+apply h_1
+apply hq
+
+
+
+
+
+
+example : (p ∨ q) → (q ∨ p) := by
+  intro h
+  cases h with | inl hnp | inr hq
+  apply Or.inr
+  apply hnp
+  apply Or.inl
+  apply hq

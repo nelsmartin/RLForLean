@@ -4,7 +4,7 @@ open Lean Lean.Expr Lean.Meta Lean.Elab.Tactic
 set_option linter.unusedVariables false
 /-
 **Tactic Scope** (I belive)
-If a (provable) theorem involves only `And`, `→`, `↔`, `False`, and variables of type `Prop`, then there exists a choice from the options presented by `so` that will solve the theorem.
+If a (provable) theorem involves only `∧`, `∨`, `→`, `↔`, `False`, and variables of type `Prop`, then there exists a choice from the options presented by `so` that will solve the theorem.
 
 The tactic will show options related to:
 1. Splitting the goal with Iff.intro
@@ -13,6 +13,8 @@ The tactic will show options related to:
 4. Decomposing terms of type And into left and right
 5. Applying all terms in the context to the goal (if that won't throw an error)
 6. Applying False.elim
+7. Splitting hypothesis of type Or using cases
+8. Proving goals of type Or with Or.inl or Or.inl
 -/
 
 --dbg_trace f!"error: {← e.toMessageData.toString}\n"
@@ -39,13 +41,36 @@ elab "and_intro_option" : tactic =>
       let goalType ← Lean.Elab.Tactic.getMainTarget
       match ← whnf goalType with
         | (.app (.app (.const ``And _) P) Q) =>
-            evalTactic (← `(tactic| apply And.intro))
+          evalTactic (← `(tactic| apply And.intro))
+          let newGoals ← getGoals
+          dbg_trace f!"apply And.intro"
+          dbg_trace f!"------------"
+          for goal in newGoals do
+            dbg_trace f!"{ ← ppGoal goal}\n"
+        | _ => pure ()
+
+elab "or_intro_option" : tactic =>
+  Lean.Elab.Tactic.withMainContext do
+      let goal ← getMainGoal
+      withoutModifyingState do
+      let goalType ← Lean.Elab.Tactic.getMainTarget
+      match ← whnf goalType with
+        | (.app (.app (.const ``Or _) mp) mpr) =>
+          withoutModifyingState do
+            evalTactic (← `(tactic| apply Or.inl))
             let newGoals ← getGoals
-            dbg_trace f!"apply And.intro"
+            dbg_trace f!"apply Or.inl"
             dbg_trace f!"------------"
             for goal in newGoals do
               dbg_trace f!"{ ← ppGoal goal}\n"
-          | _ => pure ()
+          withoutModifyingState do
+            evalTactic (← `(tactic| apply Or.inr))
+            let newGoals ← getGoals
+            dbg_trace f!"apply Or.inr"
+            dbg_trace f!"------------"
+            for goal in newGoals do
+              dbg_trace f!"{ ← ppGoal goal}\n"
+        | _ => pure ()
 
 elab "intro_option" : tactic =>
   Lean.Elab.Tactic.withMainContext do
@@ -72,7 +97,7 @@ elab "false_elim_option" : tactic =>
           evalTactic (← `(tactic| apply False.elim))
           let newGoals ← getGoals
           dbg_trace f!"apply False.elim"
-          dbg_trace f!"------------"
+          dbg_trace f!"----------------"
           for goal in newGoals do
             dbg_trace f!"{← ppGoal goal}\n"
         catch e => pure ()
@@ -172,6 +197,29 @@ elab "iff_decomp_option" : tactic =>
           | _ =>
             pure ()
 
+elab "or_decomp_option" : tactic =>
+  Lean.Elab.Tactic.withMainContext do
+      let goal ← getMainGoal
+      let ctx ← getLCtx
+      for ldecl in ctx do
+      if ldecl.isImplementationDetail then
+        continue
+      let expr := mkFVar ldecl.fvarId
+      withoutModifyingState do --
+        let declType ← inferType expr
+        let fresh := ctx.getUnusedName `h
+        match ← whnf declType with
+        | (.app (.app (.const ``Or _) mp) mpr) =>
+        let newNames : AltVarNames := ⟨ false, [fresh] ⟩
+        let newGoals ← goal.cases ldecl.fvarId #[newNames, newNames]
+        dbg_trace f!"cases { ← ppExpr expr} with | inl {fresh} | inr {fresh}"
+        dbg_trace f!"------------------------------"
+        for goal in newGoals do
+
+            dbg_trace f!"{← ppGoal goal.mvarId}\n"
+        | _ => pure ()
+
+
 elab "so" : tactic =>
   Lean.Elab.Tactic.withMainContext do
   withoutModifyingState do
@@ -182,36 +230,36 @@ elab "so" : tactic =>
     evalTactic (← `(tactic| apply_option))
     evalTactic (← `(tactic| and_decomp_option))
     evalTactic (← `(tactic| iff_decomp_option))
+    evalTactic (← `(tactic| or_decomp_option))
+    evalTactic (← `(tactic| or_intro_option))
 
 
 
 
-variable (p q r s: Prop)
 
--- From Theorem Proving in Lean 4:
-example : p ∧ ¬q → ¬(p → q) := by
-  intro h
-  intro h_1
-  let h_2 := h.right
-  apply h_2
-  let h_3 := h.left
-  apply h_1
-  apply h_3
+variable (p q r : Prop)
 
+-- commutativity of ∧ and ∨
+example : p ∧ q ↔ q ∧ p := sorry
+example : p ∨ q ↔ q ∨ p := sorry
 
-example : (p → (q → r)) ↔ (p ∧ q → r) := by
-  apply Iff.intro
-  intro h
-  intro h_1
-  let h_2 := h_1.left
-  let h_3 := h_1.right
-  apply h
-  apply h_2
-  apply h_3
-  intro h
-  intro h_1
-  intro h_2
-  apply h
-  apply And.intro
-  apply h_1
-  apply h_2
+-- associativity of ∧ and ∨
+example : (p ∧ q) ∧ r ↔ p ∧ (q ∧ r) := sorry
+example : (p ∨ q) ∨ r ↔ p ∨ (q ∨ r) := sorry
+
+-- distributivity
+example : p ∧ (q ∨ r) ↔ (p ∧ q) ∨ (p ∧ r) := sorry
+example : p ∨ (q ∧ r) ↔ (p ∨ q) ∧ (p ∨ r) := sorry
+
+-- other properties
+example : (p → (q → r)) ↔ (p ∧ q → r) := sorry
+example : ((p ∨ q) → r) ↔ (p → r) ∧ (q → r) := sorry
+example : ¬(p ∨ q) ↔ ¬p ∧ ¬q := sorry
+example : ¬p ∨ ¬q → ¬(p ∧ q) := sorry
+example : ¬(p ∧ ¬p) := sorry
+example : p ∧ ¬q → ¬(p → q) := sorry
+example : ¬p → (p → q) := sorry
+example : (¬p ∨ q) → (p → q) := sorry
+example : p ∨ False ↔ p := sorry
+example : p ∧ False ↔ False := sorry
+example : (p → q) → (¬q → ¬p) := sorry
