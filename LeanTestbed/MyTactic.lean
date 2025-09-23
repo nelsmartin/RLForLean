@@ -1,7 +1,10 @@
 import Lean
+import Lean.Data.Json
+import Lean.Data.Json
 
 open Lean Lean.Expr Lean.Meta Lean.Elab.Tactic
 set_option linter.unusedVariables false
+
 /-
 **Tactic Scope** (I belive)
 If a (provable) theorem involves only `∧`, `∨`, `→`, `↔`, `False`, and variables of type `Prop`, then there exists a choice from the options presented by `so` that will solve the theorem.
@@ -21,60 +24,110 @@ The tactic will show options related to:
 -- Note: maybe want to focus on first goal when feeding info to RL so that it can focus on what it needs to atm
 -- Infoview chooser!
 -- Could do this procedurally
-elab "iff_intro_option" : tactic =>
+
+def optionToJson (option : String) (path : System.FilePath) : IO Unit := do
+  let JSON := Json.obj {
+    ("option", Json.str option)
+  }
+  IO.FS.withFile path IO.FS.Mode.append fun h => do
+    h.putStr (JSON.compress)
+    h.putStr "\n"
+    dbg_trace option
+    dbg_trace "--------"
+
+
+def beforeStateToJson (goals : List MVarId) (path : System.FilePath) : MetaM Unit := do
+  let mut goalList : Array Json := #[]
+  for goal in goals do
+    let goalFormat ← ppGoal goal
+    let goalString := goalFormat.pretty 80
+    let jsonGoal := Json.obj {
+      ("goal", Json.str goalString)
+    }
+    goalList := goalList.push jsonGoal
+  let JSON := Json.obj {
+    ("before", Json.arr goalList)
+  }
+  IO.FS.withFile path IO.FS.Mode.append fun h => do
+    h.putStr (JSON.compress)
+    h.putStr "\n"
+
+def afterStateToJson (goals : List MVarId) (path : System.FilePath) : MetaM Unit := do
+  let mut goalList : Array Json := #[]
+  if goals.isEmpty then do
+    goalList := goalList.push (Json.str "Current goal solved!")
+    dbg_trace f!"Current goal solved!\n"
+  for goal in goals do
+    let goalFormat ← ppGoal goal
+    let goalString := goalFormat.pretty 80
+    let jsonGoal := Json.obj {
+      ("goal", Json.str goalString)
+    }
+    goalList := goalList.push jsonGoal
+    dbg_trace f!"{ ← ppGoal goal}\n"
+  let JSON := Json.obj {
+    ("after", Json.arr goalList)
+  }
+  IO.FS.withFile path IO.FS.Mode.append fun h => do
+    h.putStr (JSON.compress)
+    h.putStr "\n"
+
+
+open Lean.Elab.Tactic in
+elab "iff_intro_option" filePath:Parser.strLit : tactic =>
   Lean.Elab.Tactic.withMainContext do
-      let goal ← getMainGoal
       withoutModifyingState do
       let goalType ← Lean.Elab.Tactic.getMainTarget
       match ← whnf goalType with
         | (.app (.app (.const ``Iff _) P) Q) =>
+          beforeStateToJson (← getGoals) filePath.getString
           evalTactic (← `(tactic| apply Iff.intro))
           let newGoals ← getGoals
-          dbg_trace f!"apply Iff.intro"
-          dbg_trace f!"---------------"
-          for goal in newGoals do
-            dbg_trace f!"{ ← ppGoal goal}\n"
+          let option := f!"apply Iff.intro"
+          optionToJson option.pretty filePath.getString
+          afterStateToJson newGoals filePath.getString
         | _ => pure ()
 
-elab "and_intro_option" : tactic =>
+open Lean.Elab.Tactic in
+elab "and_intro_option" filePath:Parser.strLit : tactic =>
   Lean.Elab.Tactic.withMainContext do
-      let goal ← getMainGoal
       withoutModifyingState do
       let goalType ← Lean.Elab.Tactic.getMainTarget
       match ← whnf goalType with
         | (.app (.app (.const ``And _) P) Q) =>
+          beforeStateToJson ( ← getGoals)  filePath.getString
           evalTactic (← `(tactic| apply And.intro))
           let newGoals ← getGoals
-          dbg_trace f!"apply And.intro"
-          dbg_trace f!"---------------"
-          for goal in newGoals do
-            dbg_trace f!"{ ← ppGoal goal}\n"
+          let option := f!"apply And.intro"
+          optionToJson option.pretty filePath.getString
+          afterStateToJson newGoals filePath.getString
         | _ => pure ()
 
-elab "or_intro_option" : tactic =>
+open Lean.Elab.Tactic in
+elab "or_intro_option" filePath:Parser.strLit : tactic =>
   Lean.Elab.Tactic.withMainContext do
-      let goal ← getMainGoal
       withoutModifyingState do
       let goalType ← Lean.Elab.Tactic.getMainTarget
       match ← whnf goalType with
         | (.app (.app (.const ``Or _) mp) mpr) =>
           withoutModifyingState do
+            beforeStateToJson (← getGoals) filePath.getString
             evalTactic (← `(tactic| apply Or.inl))
             let newGoals ← getGoals
-            dbg_trace f!"apply Or.inl"
-            dbg_trace f!"------------"
-            for goal in newGoals do
-              dbg_trace f!"{ ← ppGoal goal}\n"
+            let option := f!"apply Or.inl"
+            optionToJson option.pretty filePath.getString
+            afterStateToJson newGoals filePath.getString
           withoutModifyingState do
+            beforeStateToJson (← getGoals) filePath.getString
             evalTactic (← `(tactic| apply Or.inr))
             let newGoals ← getGoals
-            dbg_trace f!"apply Or.inr"
-            dbg_trace f!"------------"
-            for goal in newGoals do
-              dbg_trace f!"{ ← ppGoal goal}\n"
+            let option := f!"apply Or.inr"
+            optionToJson option.pretty filePath.getString
+            afterStateToJson newGoals filePath.getString
         | _ => pure ()
 
-elab "intro_option" : tactic =>
+open Lean.Elab.Tactic in
+elab "intro_option" filePath:Parser.strLit : tactic =>
   Lean.Elab.Tactic.withMainContext do
       let goal ← getMainGoal
       let ctx ← getLCtx
@@ -82,29 +135,31 @@ elab "intro_option" : tactic =>
         try
           let fresh := ctx.getUnusedName `h
           let (fvarId, newGoal) ← goal.intro1
-          dbg_trace f!"intro {fresh}"
-          dbg_trace f!"------------"
+          beforeStateToJson (← getGoals) filePath.getString
+          let option := f!"intro {fresh}"
+          optionToJson option.pretty filePath.getString
           let renamedGoal ← newGoal.rename fvarId fresh
           renamedGoal.withContext do
             let newFVar := mkFVar fvarId
             let fVarType ← inferType newFVar
-            dbg_trace f!"{← ppGoal renamedGoal}\n"
+            afterStateToJson [renamedGoal] filePath.getString
         catch e => pure ()
 
-elab "false_elim_option" : tactic =>
+open Lean.Elab.Tactic in
+elab "false_elim_option" filePath:Parser.strLit : tactic =>
   Lean.Elab.Tactic.withMainContext do
-      let goal ← getMainGoal
+      beforeStateToJson (← getGoals) filePath.getString
       withoutModifyingState do
         try
           evalTactic (← `(tactic| apply False.elim))
           let newGoals ← getGoals
-          dbg_trace f!"apply False.elim"
-          dbg_trace f!"----------------"
-          for goal in newGoals do
-            dbg_trace f!"{← ppGoal goal}\n"
+          let option := f!"apply False.elim"
+          optionToJson option.pretty filePath.getString
+          afterStateToJson newGoals filePath.getString
         catch e => pure ()
 
-elab "apply_option" : tactic =>
+open Lean.Elab.Tactic in
+elab "apply_option" filePath:Parser.strLit : tactic =>
   Lean.Elab.Tactic.withMainContext do
       let goal ← getMainGoal
       let ctx ← getLCtx
@@ -115,55 +170,53 @@ elab "apply_option" : tactic =>
       withoutModifyingState do
         try
           let newGoals ← goal.apply expr
-          dbg_trace f!"apply {← ppExpr expr}"
-          dbg_trace f!"------------"
-          if newGoals.isEmpty then
-            dbg_trace f!"Current goal solved!\n"
-          else
-            for goal in newGoals do
-            dbg_trace f!"{ ← ppGoal goal}\n"
+          beforeStateToJson (← getGoals) filePath.getString
+          let option := f!"apply {← ppExpr expr}"
+          optionToJson option.pretty filePath.getString
+          afterStateToJson newGoals filePath.getString
         catch e => pure ()
 
-elab "and_decomp_option" : tactic =>
+open Lean.Elab.Tactic in
+elab "and_decomp_option" filePath:Parser.strLit : tactic =>
   Lean.Elab.Tactic.withMainContext do
       let goal ← getMainGoal
       let ctx ← getLCtx
       for ldecl in ctx do
-      if ldecl.isImplementationDetail then
-        continue
-      let expr := mkFVar ldecl.fvarId
-      withoutModifyingState do --
-        let declType ← inferType expr
-        let fresh := ctx.getUnusedName `h
-        match ← whnf declType with
-        | (.app (.app (.const ``And _) P) Q) =>
-          let leftProof ← mkAppM ``And.left #[expr]
-          let rightProof ← mkAppM ``And.right #[expr]
-          let leftType ← inferType leftProof
-          withoutModifyingState do
-            try
+        if ldecl.isImplementationDetail then
+          continue
+        let expr := mkFVar ldecl.fvarId
+        withoutModifyingState do --
+          let declType ← inferType expr
+          let fresh := ctx.getUnusedName `h
+          match ← whnf declType with
+          | (.app (.app (.const ``And _) P) Q) =>
+            let leftProof ← mkAppM ``And.left #[expr]
+            let rightProof ← mkAppM ``And.right #[expr]
+            withoutModifyingState do
+                beforeStateToJson (← getGoals) filePath.getString
+                liftMetaTactic fun mvarId => do
+                  let mvarIdNew ← mvarId.define fresh (← inferType leftProof) leftProof
+                  let (_, mvarIdNew) ← mvarIdNew.intro1P
+                  return [mvarIdNew]
+                let newGoals ← getGoals
+                let option := f!"let {fresh} := {← ppExpr leftProof}"
+                optionToJson option.pretty filePath.getString
+                afterStateToJson newGoals filePath.getString
+            withoutModifyingState do
+              beforeStateToJson (← getGoals) filePath.getString
               liftMetaTactic fun mvarId => do
-                let mvarIdNew ← mvarId.define fresh (← inferType leftProof) leftProof
-                let (_, mvarIdNew) ← mvarIdNew.intro1P
-                return [mvarIdNew]
-              let newGoal ← getMainGoal
-              dbg_trace f!"let {fresh} := {← ppExpr leftProof}"
-              dbg_trace f!"-----------------"
-              dbg_trace f!"{← ppGoal newGoal}\n"
-            catch e =>
-              dbg_trace f!"error: {← e.toMessageData.toString}"
-          withoutModifyingState do
-            liftMetaTactic fun mvarId => do
-                let mvarIdNew ← mvarId.define fresh (← inferType rightProof) rightProof
-                let (_, mvarIdNew) ← mvarIdNew.intro1P
-                return [mvarIdNew]
-            let goal ← getMainGoal
-            dbg_trace f!"let {fresh} := {← ppExpr rightProof}"
-            dbg_trace f!"------------------"
-            dbg_trace f!"{← ppGoal goal}\n"
-        | _ => pure ()
+                  let mvarIdNew ← mvarId.define fresh (← inferType rightProof) rightProof
+                  let (_, mvarIdNew) ← mvarIdNew.intro1P
+                  return [mvarIdNew]
+              let newGoals ← getGoals
+              let option := f!"let {fresh} := {← ppExpr rightProof}"
+              optionToJson option.pretty filePath.getString
+              dbg_trace option
+              afterStateToJson newGoals filePath.getString
+          | _ => pure ()
 
-elab "iff_decomp_option" : tactic =>
+open Lean.Elab.Tactic in
+elab "iff_decomp_option" filePath:Parser.strLit : tactic =>
   Lean.Elab.Tactic.withMainContext do
       let goal ← getMainGoal
       let ctx ← getLCtx
@@ -179,27 +232,30 @@ elab "iff_decomp_option" : tactic =>
             let leftProof ← mkAppM ``Iff.mp #[expr]
             let rightProof ← mkAppM ``Iff.mpr #[expr]
             withoutModifyingState do
+              beforeStateToJson (← getGoals) filePath.getString
               liftMetaTactic fun mvarId => do
                 let mvarIdNew ← mvarId.define fresh (← inferType leftProof) leftProof
                 let (_, mvarIdNew) ← mvarIdNew.intro1P
                 return [mvarIdNew]
-              let goal ← getMainGoal
-              dbg_trace f!"let {fresh} := {← ppExpr leftProof}"
-              dbg_trace f!"-----------------"
-              dbg_trace f!"{← ppGoal goal}\n"
+              let newGoals ← getGoals
+              let option := f!"let {fresh} := {← ppExpr leftProof}"
+              optionToJson option.pretty filePath.getString
+              afterStateToJson newGoals filePath.getString
             withoutModifyingState do
+              beforeStateToJson (← getGoals) filePath.getString
               liftMetaTactic fun mvarId => do
                 let mvarIdNew ← mvarId.define fresh (← inferType rightProof) rightProof
                 let (_, mvarIdNew) ← mvarIdNew.intro1P
                 return [mvarIdNew]
-              let goal ← getMainGoal
-              dbg_trace f!"let {fresh} := {← ppExpr rightProof}"
-              dbg_trace f!"-----------------"
-              dbg_trace f!"{← ppGoal goal}\n"
+              let newGoals ← getGoals
+              let option := f!"let {fresh} := {← ppExpr rightProof}"
+              optionToJson option.pretty filePath.getString
+              afterStateToJson newGoals filePath.getString
           | _ =>
             pure ()
 
-elab "or_decomp_option" : tactic =>
+open Lean.Elab.Tactic in
+elab "or_decomp_option" filePath:Parser.strLit : tactic =>
   Lean.Elab.Tactic.withMainContext do
       let goal ← getMainGoal
       let ctx ← getLCtx
@@ -212,320 +268,47 @@ elab "or_decomp_option" : tactic =>
         let fresh := ctx.getUnusedName `h
         match ← whnf declType with
         | (.app (.app (.const ``Or _) mp) mpr) =>
-        let newNames : AltVarNames := ⟨ false, [fresh] ⟩
-        let newGoals ← goal.cases ldecl.fvarId #[newNames, newNames]
-        dbg_trace f!"cases { ← ppExpr expr} with | inl {fresh} | inr {fresh}"
-        dbg_trace f!"------------------------------"
-        for goal in newGoals do
-
-            dbg_trace f!"{← ppGoal goal.mvarId}\n"
+          beforeStateToJson (← getGoals) filePath.getString
+          let newNames : AltVarNames := ⟨ false, [fresh] ⟩
+          let newGoals ← goal.cases ldecl.fvarId #[newNames, newNames]
+          let option := f!"cases { ← ppExpr expr} with | inl {fresh} | inr {fresh}"
+          optionToJson option.pretty filePath.getString
+          afterStateToJson (newGoals.map (·.mvarId)).toList filePath.getString
         | _ => pure ()
 
-
-elab "so" : tactic =>
+open Lean.Elab.Tactic in
+elab "so" filePath:Parser.strLit :  tactic  =>
   Lean.Elab.Tactic.withMainContext do
   withoutModifyingState do
-    evalTactic (← `(tactic| iff_intro_option))
-    evalTactic (← `(tactic| and_intro_option))
-    evalTactic (← `(tactic| intro_option))
-    evalTactic (← `(tactic| false_elim_option))
-    evalTactic (← `(tactic| apply_option))
-    evalTactic (← `(tactic| and_decomp_option))
-    evalTactic (← `(tactic| iff_decomp_option))
-    evalTactic (← `(tactic| or_decomp_option))
-    evalTactic (← `(tactic| or_intro_option))
+    evalTactic (← `(tactic| iff_intro_option $filePath:str))
+    evalTactic (← `(tactic| and_intro_option $filePath:str))
+    evalTactic (← `(tactic| intro_option $filePath:str))
+    evalTactic (← `(tactic| false_elim_option $filePath:str))
+    evalTactic (← `(tactic| apply_option $filePath:str))
+    evalTactic (← `(tactic| and_decomp_option $filePath:str))
+    evalTactic (← `(tactic| iff_decomp_option $filePath:str))
+    evalTactic (← `(tactic| or_decomp_option $filePath:str))
+    evalTactic (← `(tactic| or_intro_option $filePath:str))
 
 
+def path := "output.json"
+def other := "other.json"
+
+variable (p q s r : Prop)
 
 
-
-variable (p q r : Prop)
-
--- commutativity of ∧ and ∨
-example : p ∧ q ↔ q ∧ p := by
-  apply Iff.intro
-  intro h
-  apply And.intro
-  let h_1 := h.right
-  apply h_1
-  let h_1 := h.left
-  apply h_1
-  intro h
-  let h_1 := h.left
-  let h_2 := h.right
-  apply And.intro
-  apply h_2
-  apply h_1
-
-
-example : p ∨ q ↔ q ∨ p := by
-  apply Iff.intro
-  intro h
-  cases h with | inl h_1 | inr h_1
-  apply Or.inr
-  apply h_1
-  apply Or.inl
-  apply h_1
-  intro h
-  cases h with | inl h_1 | inr h_1
-  apply Or.inr
-  apply h_1
-  apply Or.inl
-  apply h_1
-
--- associativity of ∧ and ∨
-example : (p ∧ q) ∧ r ↔ p ∧ (q ∧ r) := by
-  apply Iff.intro
-  intro h
-  let h_1 := h.left
-  let h_2 := h.right
-  let h_3 := h_1.left
-  apply And.intro
-  apply h_3
-  let h_4 := h_1.right
-  apply And.intro
-  apply h_4
-  apply h_2
-  intro h
-  let h_1 := h.left
-  let h_2 := h.right
-  let h_3 := h_2.left
-  let h_4 := h_2.right
-  apply And.intro
-  apply And.intro
-  apply h_1
-  apply h_3
-  apply h_4
-
-
-
-example : (p ∨ q) ∨ r ↔ p ∨ (q ∨ r) := by
-  apply Iff.intro
-  intro h
-  cases h with | inl h_1 | inr h_1
-  cases h_1 with | inl h | inr h
-  apply Or.inl
-  apply h
-  apply Or.inr
-  apply Or.inl
-  apply h
-  apply Or.inr
-  apply Or.inr
-  apply h_1
-  intro h
-  cases h with | inl h_1 | inr h_1
-  apply Or.inl
-  apply Or.inl
-  apply h_1
-  cases h_1 with | inl h | inr h
-  apply Or.inl
-  apply Or.inr
-  apply h
-  apply Or.inr
-  apply h
-
--- distributivity
-example : p ∧ (q ∨ r) ↔ (p ∧ q) ∨ (p ∧ r) := by
-  apply Iff.intro
-  intro h
-  let h_1 := h.left
-  let h_2 := h.right
-  cases h_2 with | inl h_3 | inr h_3
-  apply Or.inl
-  apply And.intro
-  apply h_1
-  apply h_3
-  cases h_2 with | inl h_4 | inr h_4
-  apply Or.inl
-  apply And.intro
-  apply h_1
-  apply h_4
-  apply Or.inr
-  apply And.intro
-  apply h_1
-  apply h_3
-  intro h
-  cases h with | inl h_1 | inr h_1
-  let h := h_1.left
-  let h_2 := h_1.right
-  apply And.intro
-  apply h
-  apply Or.inl
-  apply h_2
-  let h := h_1.left
-  let h_2 := h_1.right
-  apply And.intro
-  apply h
-  apply Or.inr
-  apply h_2
-
-example : p ∨ (q ∧ r) ↔ (p ∨ q) ∧ (p ∨ r) := by
-  apply Iff.intro
-  intro h
-  cases h with | inl h_1 | inr h_1
-  apply And.intro
-  apply Or.inl
-  apply h_1
-  apply Or.inl
-  apply h_1
-  let h := h_1.left
-  let h_2 := h_1.right
-  apply And.intro
-  apply Or.inr
-  apply h
-  apply Or.inr
-  apply h_2
-  intro h
-  let h_1 := h.left
-  let h_2 := h.right
-  cases h_1 with | inl h_3 | inr h_3
-  cases h_2 with | inl h_4 | inr h_4
-  apply Or.inl
-  apply h_3
-  apply Or.inl
-  apply h_3
-  cases h_2 with | inl h_4 | inr h_4
-  apply Or.inl
-  apply h_4
-  apply Or.inr
-  apply And.intro
-  apply h_3
-  apply h_4
-
--- other properties
-example : (p → (q → r)) ↔ (p ∧ q → r) := by
-  apply Iff.intro
-  intro h
-  intro h_1
-  let h_2 := h_1.left
-  let h_3 := h_1.right
-  apply h
-  apply h_2
-  apply h_3
-  intro h
-  intro h_1
-  intro h_2
-  apply h
-  apply And.intro
-  apply h_1
-  apply h_2
-
-
-
-
-example : ((p ∨ q) → r) ↔ (p → r) ∧ (q → r) := by
-  apply Iff.intro
-  intro h
-  apply And.intro
-  intro h_1
-  apply h
-  apply Or.inl
-  apply h_1
-  intro h_1
-  apply h
-  apply Or.inr
-  apply h_1
-  intro h
-  intro h_1
-  let h_2 := h.left
-  let h_3 := h.right
-  cases h_1 with | inl h_4 | inr h_4
-  apply h_2
-  apply h_4
-  apply h_3
-  apply h_4
-
-example : ¬(p ∨ q) ↔ ¬p ∧ ¬q := by
-  apply Iff.intro
-  intro h
-  apply And.intro
-  intro h_1
-  apply h
-  apply Or.inl
-  apply h_1
-  intro h_1
-  apply h
-  apply Or.inr
-  apply h_1
-  intro h
-  intro h_1
-  cases h_1 with | inl h_2 | inr h_2
-  let h_1 := h.left
-  let h_3 := h.right
-  apply h_1
-  apply h_2
-  let h_1 := h.right
-  apply h_1
-  apply h_2
-
-example : ¬p ∨ ¬q → ¬(p ∧ q) := by
-  intro h
-  intro h_1
-  cases h with | inl h_2 | inr h_2
-  let h := h_1.left
-  apply h_2
-  apply h
-  let h := h_1.right
-  apply h_2
-  apply h
-
-example : ¬(p ∧ ¬p) :=  by
-  intro h
-  let h_1 := h.left
-  let h_2 := h.right
-  apply h_2
-  apply h_1
-
-example : p ∧ ¬q → ¬(p → q) := by
-  intro h
-  intro h_1
-  let h_2 := h.left
-  let h_3 := h.right
-  apply h_3
-  apply h_1
-  apply h_2
-
-example : ¬p → (p → q) := by
-  intro h
-  intro h_1
-  apply False.elim
-  apply h
-  apply h_1
-
-
-example : (¬p ∨ q) → (p → q) := by
-  intro h
-  intro h_1
-  cases h with | inl h_2 | inr h_2
-  apply False.elim
-  apply h_2
-  apply h_1
-  apply h_2
-
-example : p ∨ False ↔ p := by
-  apply Iff.intro
-  intro h
-  cases h with | inl h_1 | inr h_1
-  apply h_1
-  apply False.elim
-  apply h_1
-  intro h
-  apply Or.inl
-  apply h
-
-example : p ∧ False ↔ False := by
-  apply Iff.intro
-  intro h
-  let h_1 := h.right
-  apply h_1
-  intro h
-  apply False.elim
-  apply h
-
-example : (p → q) → (¬q → ¬p) := by
-  intro h
-  intro h_1
-  intro h_2
-  apply h_1
-  apply h
-  apply h_2
+-- example : (p ∧ q) ∧ r ↔ p ∧ (q ∧ r) := by
+--   apply Iff.intro
+--   intro h
+--   let h_1 := h.left
+--   let h_2 := h.right
+--   let h_3 := h_1.left
+--   apply And.intro
+--   apply h_3
+--   let h_4 := h_1.right
+--   apply And.intro
+--   apply h_4
+--   apply h_2
+--   intro h
+--   so "output.ndjson"
+--   sorry
